@@ -26,3 +26,6 @@ junit-report.xml
 /go.mod
 # workaround go.mod for autogen/winresources/dockerd
 /hack/make/.resources-windows/go.mod
+
+# ignore custom development certificates
+/hack/dockerfile/certs/*.crt
