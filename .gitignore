@@ -21,3 +21,6 @@ vendor/pkg/
 go-test-report.json
 profile.out
 junit-report.xml
+
+# ignore custom development certificates
+/hack/dockerfile/certs/*.crt
