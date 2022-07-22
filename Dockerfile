@@ -98,6 +98,7 @@ FROM base AS cross-false
 
 FROM --platform=linux/amd64 base AS cross-true
 ARG DEBIAN_FRONTEND
+RUN dpkg --add-architecture amd64
 RUN dpkg --add-architecture arm64
 RUN dpkg --add-architecture armel
 RUN dpkg --add-architecture armhf
@@ -106,6 +107,7 @@ RUN dpkg --add-architecture s390x
 RUN --mount=type=cache,sharing=locked,id=moby-cross-true-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=moby-cross-true-aptcache,target=/var/cache/apt \
         apt-get update && apt-get install -y --no-install-recommends \
+            crossbuild-essential-amd64 \
             crossbuild-essential-arm64 \
             crossbuild-essential-armel \
             crossbuild-essential-armhf \
@@ -135,11 +137,13 @@ ARG DEBIAN_FRONTEND
 RUN --mount=type=cache,sharing=locked,id=moby-cross-true-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=moby-cross-true-aptcache,target=/var/cache/apt \
         apt-get update && apt-get install -y --no-install-recommends \
+            libapparmor-dev:amd64 \
             libapparmor-dev:arm64 \
             libapparmor-dev:armel \
             libapparmor-dev:armhf \
             libapparmor-dev:ppc64el \
             libapparmor-dev:s390x \
+            libseccomp-dev:amd64 \
             libseccomp-dev:arm64 \
             libseccomp-dev:armel \
             libseccomp-dev:armhf \
