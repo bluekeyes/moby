@@ -106,12 +106,14 @@ FROM base AS cross-false
 
 FROM --platform=linux/amd64 base AS cross-true
 ARG DEBIAN_FRONTEND
+RUN dpkg --add-architecture amd64
 RUN dpkg --add-architecture arm64
 RUN dpkg --add-architecture armel
 RUN dpkg --add-architecture armhf
 RUN --mount=type=cache,sharing=locked,id=moby-cross-true-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=moby-cross-true-aptcache,target=/var/cache/apt \
         apt-get update && apt-get install -y --no-install-recommends \
+            crossbuild-essential-amd64 \
             crossbuild-essential-arm64 \
             crossbuild-essential-armel \
             crossbuild-essential-armhf
@@ -143,9 +145,11 @@ RUN echo 'deb http://deb.debian.org/debian buster-backports main' > /etc/apt/sou
 RUN --mount=type=cache,sharing=locked,id=moby-cross-true-aptlib,target=/var/lib/apt \
     --mount=type=cache,sharing=locked,id=moby-cross-true-aptcache,target=/var/cache/apt \
         apt-get update && apt-get install -y --no-install-recommends \
+            libapparmor-dev:amd64 \
             libapparmor-dev:arm64 \
             libapparmor-dev:armel \
             libapparmor-dev:armhf \
+            libseccomp-dev:amd64/buster-backports \
             libseccomp-dev:arm64/buster-backports \
             libseccomp-dev:armel/buster-backports \
             libseccomp-dev:armhf/buster-backports
