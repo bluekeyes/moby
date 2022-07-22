@@ -584,17 +584,19 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 }
 
 func answerString(answer []dns.RR) string {
-	var a, aaaa []string
+	var a, aaaa, cname []string
 	for _, rr := range answer {
 		h := rr.Header()
 		switch h.Rrtype {
 		case dns.TypeA:
-			a = append(a, string(rr.(*dns.A).A))
+			a = append(a, rr.(*dns.A).A.String())
 		case dns.TypeAAAA:
-			aaaa = append(aaaa, string(rr.(*dns.AAAA).AAAA))
+			aaaa = append(aaaa, rr.(*dns.AAAA).AAAA.String())
+		case dns.TypeCNAME:
+			cname = append(cname, rr.(*dns.CNAME).Target)
 		}
 	}
-	return fmt.Sprintf("A: [%s], AAAA: [%s]", strings.Join(a, ", "), strings.Join(aaaa, ", "))
+	return fmt.Sprintf("A: [%s], AAAA: [%s], CNAME: [%s]", strings.Join(a, ", "), strings.Join(aaaa, ", "), strings.Join(cname, ", "))
 }
 
 func statusString(responseCode int) string {
