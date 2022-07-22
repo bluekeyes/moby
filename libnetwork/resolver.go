@@ -127,6 +127,8 @@ func (r *resolver) SetupFunc(port int) func() {
 			return
 		}
 
+		logrus.Infof("[resolver] listening for UDP on %s", addr)
+
 		// Listen on a TCP as well
 		tcpaddr := &net.TCPAddr{
 			IP:   net.ParseIP(r.listenAddress),
@@ -138,6 +140,9 @@ func (r *resolver) SetupFunc(port int) func() {
 			r.err = fmt.Errorf("error in opening name TCP server socket %v", err)
 			return
 		}
+
+		logrus.Infof("[resolver] listening for TCP on %s", tcpaddr)
+
 		r.err = nil
 	}
 }
@@ -379,11 +384,17 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 		return
 	}
 
-	rid := uuid.New()
-	logger := logrus.WithField("rid", rid.String())
-
 	queryName := query.Question[0].Name
 	queryType := query.Question[0].Qtype
+
+	rid := uuid.New()
+	logger := logrus.WithFields(logrus.Fields{
+		"rid":        rid.String(),
+		"query_name": queryName,
+		"query_type": dns.TypeToString[queryType],
+	})
+
+	logger.Info("[resolver] handling query")
 
 	switch queryType {
 	case dns.TypeA:
@@ -406,9 +417,12 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 	}
 
 	if resp == nil {
+		logger.Info("[resolver] no response from internal resolver, forwarding query to external DNS")
+
 		// If the backend doesn't support proxying dns request
 		// fail the response
 		if !r.proxyDNS {
+			logger.Info("[resolver] backend does not support proxying, returning server failure")
 			resp = new(dns.Msg)
 			resp.SetRcode(query, dns.RcodeServerFailure)
 			if err := w.WriteMsg(resp); err != nil {
@@ -453,6 +467,9 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 			if extDNS.IPStr == "" {
 				break
 			}
+
+			logger.Infof("[resolver] dialing external DNS server %s:53", extDNS.IPStr)
+
 			extConnect := func() {
 				addr := fmt.Sprintf("%s:%d", extDNS.IPStr, 53)
 				extConn, err = net.DialTimeout(proto, addr, extIOTimeout)
@@ -486,11 +503,7 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 
 			// limits the number of outstanding concurrent queries.
 			if !r.forwardQueryStart() {
-				old := r.tStamp
-				r.tStamp = time.Now()
-				if r.tStamp.Sub(old) > logInterval {
-					logger.Errorf("[resolver] more than %v concurrent queries from %s", maxConcurrent, extConn.LocalAddr().String())
-				}
+				logger.Errorf("[resolver] more than %v concurrent queries from %s, trying next external DNS", maxConcurrent, extConn.LocalAddr().String())
 				continue
 			}
 
@@ -530,6 +543,7 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 				continue
 			case dns.RcodeSuccess:
 				// All is well
+				logger.Infof("[resolver] external DNS %s:%s responded with success", proto, extDNS.IPStr)
 			default:
 				// Server gave some error. Log the error, and continue with the next external DNS server
 				logger.Infof("[resolver] external DNS %s:%s responded with %s (code %d) for %q", proto, extDNS.IPStr, statusString(resp.Rcode), resp.Rcode, queryName)
@@ -558,13 +572,29 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 			break
 		}
 		if resp == nil {
+			logger.Warn("[resolver] tried all external DNS servers, but got no response from any of them")
 			return
 		}
 	}
 
+	logger.Infof("[resolver] sending response to client: %s, %s", statusString(resp.Rcode), answerString(resp.Answer))
 	if err = w.WriteMsg(resp); err != nil {
 		logger.WithError(err).Errorf("[resolver] failed to write response")
 	}
+}
+
+func answerString(answer []dns.RR) string {
+	var a, aaaa []string
+	for _, rr := range answer {
+		h := rr.Header()
+		switch h.Rrtype {
+		case dns.TypeA:
+			a = append(a, string(rr.(*dns.A).A))
+		case dns.TypeAAAA:
+			aaaa = append(aaaa, string(rr.(*dns.AAAA).AAAA))
+		}
+	}
+	return fmt.Sprintf("A: [%s], AAAA: [%s]", strings.Join(a, ", "), strings.Join(aaaa, ", "))
 }
 
 func statusString(responseCode int) string {
