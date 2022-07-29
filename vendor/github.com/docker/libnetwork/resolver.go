@@ -21,10 +21,10 @@ type Resolver interface {
 	// Stop stops the name server for the container. Stopped resolver
 	// can be reused after running the SetupFunc again.
 	Stop()
-	// SetupFunc() provides the setup function that should be run
+	// SetupFunc provides the setup function that should be run
 	// in the container's network namespace.
 	SetupFunc(int) func()
-	// NameServer() returns the IP of the DNS resolver for the
+	// NameServer returns the IP of the DNS resolver for the
 	// containers.
 	NameServer() string
 	// SetExtServers configures the external nameservers the resolver
@@ -52,7 +52,7 @@ type DNSBackend interface {
 	// ExecFunc allows a function to be executed in the context of the backend
 	// on behalf of the resolver.
 	ExecFunc(f func()) error
-	//NdotsSet queries the backends ndots dns option settings
+	// NdotsSet queries the backends ndots dns option settings
 	NdotsSet() bool
 	// HandleQueryResp passes the name & IP from a response to the backend. backend
 	// can use it to maintain any required state about the resolution
@@ -64,7 +64,7 @@ const (
 	ptrIPv4domain   = ".in-addr.arpa."
 	ptrIPv6domain   = ".ip6.arpa."
 	respTTL         = 600
-	maxExtDNS       = 3 //max number of external servers to try
+	maxExtDNS       = 3 // max number of external servers to try
 	extIOTimeout    = 4 * time.Second
 	defaultRespSize = 512
 	maxConcurrent   = 1024
@@ -157,13 +157,17 @@ func (r *resolver) Start() error {
 	s := &dns.Server{Handler: r, PacketConn: r.conn}
 	r.server = s
 	go func() {
-		s.ActivateAndServe()
+		if err := s.ActivateAndServe(); err != nil {
+			logrus.WithError(err).Error("[resolver] failed to start PacketConn DNS server")
+		}
 	}()
 
 	tcpServer := &dns.Server{Handler: r, Listener: r.tcpListen}
 	r.tcpServer = tcpServer
 	go func() {
-		tcpServer.ActivateAndServe()
+		if err := tcpServer.ActivateAndServe(); err != nil {
+			logrus.WithError(err).Error("[resolver] failed to start TCP DNS server")
+		}
 	}()
 	return nil
 }
@@ -173,10 +177,10 @@ func (r *resolver) Stop() {
 	defer func() { <-r.startCh }()
 
 	if r.server != nil {
-		r.server.Shutdown()
+		r.server.Shutdown() //nolint:errcheck
 	}
 	if r.tcpServer != nil {
-		r.tcpServer.Shutdown()
+		r.tcpServer.Shutdown() //nolint:errcheck
 	}
 	r.conn = nil
 	r.tcpServer = nil
@@ -210,7 +214,7 @@ func setCommonFlags(msg *dns.Msg) {
 
 func shuffleAddr(addr []net.IP) []net.IP {
 	for i := len(addr) - 1; i > 0; i-- {
-		r := rand.Intn(i + 1)
+		r := rand.Intn(i + 1) //nolint:gosec // gosec complains about the use of rand here. It should be fine.
 		addr[i], addr[r] = addr[r], addr[i]
 	}
 	return addr
@@ -224,7 +228,8 @@ func createRespMsg(query *dns.Msg) *dns.Msg {
 	return resp
 }
 
-func (r *resolver) handleMXQuery(name string, query *dns.Msg) (*dns.Msg, error) {
+func (r *resolver) handleMXQuery(query *dns.Msg) (*dns.Msg, error) {
+	name := query.Question[0].Name
 	addrv4, _ := r.backend.ResolveName(name, types.IPv4)
 	addrv6, _ := r.backend.ResolveName(name, types.IPv6)
 
@@ -240,9 +245,12 @@ func (r *resolver) handleMXQuery(name string, query *dns.Msg) (*dns.Msg, error) 
 	return resp, nil
 }
 
-func (r *resolver) handleIPQuery(name string, query *dns.Msg, ipType int) (*dns.Msg, error) {
-	var addr []net.IP
-	var ipv6Miss bool
+func (r *resolver) handleIPQuery(query *dns.Msg, ipType int) (*dns.Msg, error) {
+	var (
+		addr     []net.IP
+		ipv6Miss bool
+		name     = query.Question[0].Name
+	)
 	addr, ipv6Miss = r.backend.ResolveName(name, ipType)
 
 	if addr == nil && ipv6Miss {
@@ -279,8 +287,11 @@ func (r *resolver) handleIPQuery(name string, query *dns.Msg, ipType int) (*dns.
 	return resp, nil
 }
 
-func (r *resolver) handlePTRQuery(ptr string, query *dns.Msg) (*dns.Msg, error) {
-	var parts []string
+func (r *resolver) handlePTRQuery(query *dns.Msg) (*dns.Msg, error) {
+	var (
+		parts []string
+		ptr   = query.Question[0].Name
+	)
 
 	if strings.HasSuffix(ptr, ptrIPv4domain) {
 		parts = strings.Split(ptr, ptrIPv4domain)
@@ -310,8 +321,8 @@ func (r *resolver) handlePTRQuery(ptr string, query *dns.Msg) (*dns.Msg, error) 
 	return resp, nil
 }
 
-func (r *resolver) handleSRVQuery(svc string, query *dns.Msg) (*dns.Msg, error) {
-
+func (r *resolver) handleSRVQuery(query *dns.Msg) (*dns.Msg, error) {
+	svc := query.Question[0].Name
 	srv, ip := r.backend.ResolveService(svc)
 
 	if len(srv) == 0 {
@@ -367,22 +378,26 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 		return
 	}
 
-	name := query.Question[0].Name
-	switch query.Question[0].Qtype {
+	queryName := query.Question[0].Name
+	queryType := query.Question[0].Qtype
+
+	switch queryType {
 	case dns.TypeA:
-		resp, err = r.handleIPQuery(name, query, types.IPv4)
+		resp, err = r.handleIPQuery(query, types.IPv4)
 	case dns.TypeAAAA:
-		resp, err = r.handleIPQuery(name, query, types.IPv6)
+		resp, err = r.handleIPQuery(query, types.IPv6)
 	case dns.TypeMX:
-		resp, err = r.handleMXQuery(name, query)
+		resp, err = r.handleMXQuery(query)
 	case dns.TypePTR:
-		resp, err = r.handlePTRQuery(name, query)
+		resp, err = r.handlePTRQuery(query)
 	case dns.TypeSRV:
-		resp, err = r.handleSRVQuery(name, query)
+		resp, err = r.handleSRVQuery(query)
+	default:
+		logrus.Debugf("[resolver] query type %s is not supported by the embedded DNS and will be forwarded to external DNS", dns.TypeToString[queryType])
 	}
 
 	if err != nil {
-		logrus.Error(err)
+		logrus.WithError(err).Errorf("[resolver] failed to handle query: %s (%s) from %s", queryName, dns.TypeToString[queryType], extConn.LocalAddr().String())
 		return
 	}
 
@@ -392,7 +407,9 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 		if !r.proxyDNS {
 			resp = new(dns.Msg)
 			resp.SetRcode(query, dns.RcodeServerFailure)
-			w.WriteMsg(resp)
+			if err := w.WriteMsg(resp); err != nil {
+				logrus.WithError(err).Error("[resolver] error writing dns response")
+			}
 			return
 		}
 
@@ -400,11 +417,9 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 		// in the root domain don't forward it out. We will return
 		// failure and let the client retry with the search domain
 		// attached
-		switch query.Question[0].Qtype {
-		case dns.TypeA:
-			fallthrough
-		case dns.TypeAAAA:
-			if r.backend.NdotsSet() && !strings.Contains(strings.TrimSuffix(name, "."), ".") {
+		switch queryType {
+		case dns.TypeA, dns.TypeAAAA:
+			if r.backend.NdotsSet() && !strings.Contains(strings.TrimSuffix(queryName, "."), ".") {
 				resp = createRespMsg(query)
 			}
 		}
@@ -449,15 +464,16 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 				}
 			}
 			if err != nil {
-				logrus.Warnf("[resolver] connect failed: %s", err)
+				logrus.WithField("retries", i).Warnf("[resolver] connect failed: %s", err)
 				continue
 			}
-			queryType := dns.TypeToString[query.Question[0].Qtype]
-			logrus.Debugf("[resolver] query %s (%s) from %s, forwarding to %s:%s", name, queryType,
+			logrus.Debugf("[resolver] query %s (%s) from %s, forwarding to %s:%s", queryName, dns.TypeToString[queryType],
 				extConn.LocalAddr().String(), proto, extDNS.IPStr)
 
 			// Timeout has to be set for every IO operation.
-			extConn.SetDeadline(time.Now().Add(extIOTimeout))
+			if err := extConn.SetDeadline(time.Now().Add(extIOTimeout)); err != nil {
+				logrus.WithError(err).Error("[resolver] error setting conn deadline")
+			}
 			co := &dns.Conn{
 				Conn:    extConn,
 				UDPSize: uint16(maxSize),
@@ -486,24 +502,24 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 			// client can retry over TCP
 			if err != nil && (resp == nil || !resp.Truncated) {
 				r.forwardQueryEnd()
-				logrus.Debugf("[resolver] read from DNS server failed, %s", err)
+				logrus.WithError(err).Debugf("[resolver] failed to read from DNS server")
 				continue
 			}
 			r.forwardQueryEnd()
 
 			if resp == nil {
-				logrus.Debugf("[resolver] external DNS %s:%s returned empty response for %q", proto, extDNS.IPStr, name)
+				logrus.Debugf("[resolver] external DNS %s:%s returned empty response for %q", proto, extDNS.IPStr, queryName)
 				break
 			}
 			switch resp.Rcode {
 			case dns.RcodeServerFailure, dns.RcodeRefused:
 				// Server returned FAILURE: continue with the next external DNS server
 				// Server returned REFUSED: this can be a transitional status, so continue with the next external DNS server
-				logrus.Debugf("[resolver] external DNS %s:%s responded with %s for %q", proto, extDNS.IPStr, statusString(resp.Rcode), name)
+				logrus.Debugf("[resolver] external DNS %s:%s responded with %s for %q", proto, extDNS.IPStr, statusString(resp.Rcode), queryName)
 				continue
 			case dns.RcodeNameError:
 				// Server returned NXDOMAIN. Stop resolution if it's an authoritative answer (see RFC 8020: https://tools.ietf.org/html/rfc8020#section-2)
-				logrus.Debugf("[resolver] external DNS %s:%s responded with %s for %q", proto, extDNS.IPStr, statusString(resp.Rcode), name)
+				logrus.Debugf("[resolver] external DNS %s:%s responded with %s for %q", proto, extDNS.IPStr, statusString(resp.Rcode), queryName)
 				if resp.Authoritative {
 					break
 				}
@@ -512,7 +528,7 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 				// All is well
 			default:
 				// Server gave some error. Log the error, and continue with the next external DNS server
-				logrus.Debugf("[resolver] external DNS %s:%s responded with %s (code %d) for %q", proto, extDNS.IPStr, statusString(resp.Rcode), resp.Rcode, name)
+				logrus.Debugf("[resolver] external DNS %s:%s responded with %s (code %d) for %q", proto, extDNS.IPStr, statusString(resp.Rcode), resp.Rcode, queryName)
 				continue
 			}
 			answers := 0
@@ -532,7 +548,7 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 				}
 			}
 			if resp.Answer == nil || answers == 0 {
-				logrus.Debugf("[resolver] external DNS %s:%s did not return any %s records for %q", proto, extDNS.IPStr, queryType, name)
+				logrus.Debugf("[resolver] external DNS %s:%s did not return any %s records for %q", proto, extDNS.IPStr, dns.TypeToString[queryType], queryName)
 			}
 			resp.Compress = true
 			break
@@ -543,7 +559,7 @@ func (r *resolver) ServeDNS(w dns.ResponseWriter, query *dns.Msg) {
 	}
 
 	if err = w.WriteMsg(resp); err != nil {
-		logrus.Errorf("[resolver] error writing resolver resp, %s", err)
+		logrus.WithError(err).Errorf("[resolver] failed to write response")
 	}
 }
 
